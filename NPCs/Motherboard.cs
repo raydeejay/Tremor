@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using Microsoft.Xna.Framework;
 using Terraria;
@@ -54,25 +55,22 @@ namespace Tremor.NPCs
 			this.stateTime = appearingTime + disappearingTime + followPlayerTime;
 		}
 
-		public virtual void AI(Motherboard motherboard) {}
-		public virtual void Animate(Motherboard boss) {}
-		public virtual void AdjustHead(Motherboard boss) {}
-		public virtual void Start(Motherboard boss) {}
-
-		protected void SecondShoot(Motherboard boss)
+		public virtual int FrameOffset => 0;
+		
+		public void Animate(Motherboard boss)
 		{
-			if (!boss.isInsideTerrain()) {
-				--_secondShootTime;
-			}
-
-			if (_secondShootTime <= 0)
+			--_timeToAnimation;
+			if (_timeToAnimation == 0)
 			{
-				_secondShootTime = SecondShootRate;
-				for (int i = 0; i < 2; i++) {
-					Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + 95, 0, 0, boss.mod.ProjectileType("projMotherboardSuperLaser"), SecondShootDamage, SecondShootKn, 0, boss.npc.whoAmI, i);
-				}
+				_currentFrame = (_currentFrame + 1) % 3;
+				_timeToAnimation = AnimationRate;
+				boss.npc.frame = boss.GetFrame(_currentFrame + FrameOffset);
 			}
 		}
+
+		public virtual void AI(Motherboard motherboard) {}
+		public virtual void AdjustHead(Motherboard boss) {}
+		public virtual void Start(Motherboard boss) {}
 	}
 
 	// Phase 1
@@ -88,45 +86,100 @@ namespace Tremor.NPCs
 
 	public class Stage1 : Stage
 	{
-		private const int MaxDrones = 20; // Maximum amount of Drones
-		private const int DronSpawnAreaX = 300; // Area size in which Drone can spawn by X value
-		private const int DronSpawnAreaY = 300; // Area size in which Drone can spawn by Y value
-		private const int StartDronCount = 8; // Initial amount of Drones
+		public Stage1(int followPlayerTime, int disappearingTime, int appearingTime) : base(followPlayerTime, disappearingTime, appearingTime) {}
 
+		private List<int> _signalDrones = new List<int>(); // ID of Signal Drones
+
+		private const int DroneSpawnAreaX = 300; // Area size in which Drone can spawn by X value
+		private const int DroneSpawnAreaY = 300; // Area size in which Drone can spawn by Y value
+		private const int StartDroneCount = 8;
+		private const int MaxDrones = 20;
 		private const int ShootRate = 150; // Fire rate in ticks
 		private const int TimeToLaserRate = 3; // Fire rate (From drones to player)
-		private const int LaserType = ProjectileID.ShadowBeamHostile; // Laser type
 
-		private bool _shootNow; // Does the Motherboard shoots right now?
 		private int _timeToNextDrone = 1; // Time for spawning next Drone
 		private int _timeToShoot = 60; // Time for next shoot
 		private int _timeToLaser = 3; // Time for next shoot (Drones lasers)
+		private int _lastSignalDrone = -1; // Last Drone
 
-		private List<int> _signalDrones = new List<int>(); // ID of Signal Drones
-		private int _lastSignalDron = -1; // Last Drone
+		//------------------------------------------------
+		// private methods
+		//------------------------------------------------
 
-		private int GetTimeToNextDrone => (Main.rand.Next(3, 6) * 60);
-
-		public Stage1(int followPlayerTime, int disappearingTime, int appearingTime) : base(followPlayerTime, disappearingTime, appearingTime) {}
-
-		public override void Start(Motherboard boss)
+		// Removes all dead Drones from the list
+		private void RemoveDeadDrones(Motherboard boss)
 		{
-			for (int i = 0; i < StartDronCount; i++)
+			List<int> aliveDronesList = _signalDrones.Where(x => Main.npc[x].active && Main.npc[x].type == boss.mod.NPCType("SignalDron")).ToList();
+			_signalDrones = aliveDronesList;
+		}
+
+		// spawn and register one drone
+		private void SpawnOneDrone(Motherboard boss)
+		{
+			Vector2 spawnPosition = Helper.RandomPointInArea(new Vector2(boss.npc.Center.X - DroneSpawnAreaX / 2, boss.npc.Center.Y - DroneSpawnAreaY / 2),
+									 new Vector2(boss.npc.Center.X + DroneSpawnAreaX / 2, boss.npc.Center.Y + DroneSpawnAreaY / 2));
+			_signalDrones.Add(NPC.NewNPC((int)spawnPosition.X, (int)spawnPosition.Y + LaserYOffset, boss.mod.NPCType("SignalDron"), 0, 0, 0, 0, boss.npc.whoAmI));
+		}
+
+		private void ShootOneLaser(Motherboard boss)
+		{
+			int whoAmIproj = (_lastSignalDrone == -1) ? boss.npc.whoAmI : _signalDrones[_lastSignalDrone];
+			++_lastSignalDrone;
+			int newProj = Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y, 0, 0,
+							       boss.mod.ProjectileType("projMotherboardLaser"),
+							       LaserDamage, LaserKb, 0, whoAmIproj, _signalDrones[_lastSignalDrone]);
+			if (_lastSignalDrone == 0)
 			{
-				Vector2 spawnPosition = Helper.RandomPointInArea(new Vector2(boss.npc.Center.X - DronSpawnAreaX / 2, boss.npc.Center.Y - DronSpawnAreaY / 2), new Vector2(boss.npc.Center.X + DronSpawnAreaX / 2, boss.npc.Center.Y + DronSpawnAreaY / 2));
-				_signalDrones.Add(NPC.NewNPC((int)spawnPosition.X, (int)spawnPosition.Y, boss.mod.NPCType("SignalDron"), 0, 0, 0, 0, boss.npc.whoAmI));
+				Main.projectile[newProj].localAI[1] = 1;
 			}
 		}
 
-		public override void Animate(Motherboard boss)
+		private void ShootOneSecondShot(Motherboard boss)
 		{
-			if (--_timeToAnimation <= 0)
-			{
+			Vector2 velocity = Helper.VelocityToPoint(Main.npc[_signalDrones[_signalDrones.Count - 1]].Center, Main.player[boss.npc.target].Center, SecondShootSpeed);
+			velocity.X += Main.rand.Next(-SecondShootSpread, SecondShootSpread + 1) * SecondShootSpreadMult;
+			velocity.Y += Main.rand.Next(-SecondShootSpread, SecondShootSpread + 1) * SecondShootSpreadMult;
+			Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y,
+						 velocity.X, velocity.Y,
+						 ProjectileID.ShadowBeamHostile, SecondShootDamage, SecondShootKn);
+		}
 
-				if (++_currentFrame > 3)
-					_currentFrame = 1;
-				_timeToAnimation = AnimationRate;
-				boss.npc.frame = boss.GetFrame(_currentFrame);
+		private void ShootDroneLasers(Motherboard boss) // If it is time to shoot
+		{
+			// if there's no current drone AND we are not moving, return
+			// only shoot lasers if there are any and we are in moving phase
+			--_timeToLaser;
+			if (_timeToLaser == 0)
+			{
+				// Set new shoot time (3 frames)
+				_timeToLaser = TimeToLaserRate;
+				ShootOneLaser(boss);
+
+				// If we shot all interdrone lasers, shoot at the player
+				if (_lastSignalDrone + 1 >= _signalDrones.Count)
+				{
+					// shoot N SecondShoots
+					for (int i = 0; i < SecondShootCount; i++)
+					{
+						ShootOneSecondShot(boss);
+					}
+
+					// setting last Drone to -1 and ending the cycle of shooting
+					_lastSignalDrone = -1;
+					_timeToShoot = ShootRate;
+				}
+			}
+		}
+
+		//------------------------------------------------
+		// hooks
+		//------------------------------------------------
+
+		public override void Start(Motherboard boss)
+		{
+			for (int i = 0; i < StartDroneCount; i++)
+			{
+				SpawnOneDrone(boss);
 			}
 		}
 
@@ -135,123 +188,38 @@ namespace Tremor.NPCs
 			Main.npcHeadBossTexture[boss.headTexture] = boss.mod.GetTexture("NPCs/Motherboard_Head_Boss");
 		}
 
-		private void CheckDrones(Motherboard boss) // Removes all dead Drones from the list
-		{
-			// Passing through each element of array with ID of clampers
-			for (int index = 0; index < _signalDrones.Count; index++)
-			{
-				// If NPC with ID from array isn't a Drone or is dead then... FIX THIS AWFULNESS!!!
-				if (!Main.npc[_signalDrones[index]].active || Main.npc[_signalDrones[index]].type != boss.mod.NPCType("SignalDron"))
-				{
-					_signalDrones.RemoveAt(index); // Remove ID of this NPC from Drones list
-					--index; // Lowering index by 1 in order not to miss 1 element in array of IDs
-				}
-			}
-		}
-
-		private void SpawnDrones(Motherboard boss) // If it is time to spawn a Drone
-		{
-			// If the current amount of Drones = or > maximum amount of drones then...
-			if (_signalDrones.Count >= MaxDrones)
-			{
-				return;
-			}
-
-			// Lowering the time of spawning next Drone. If the time < or = 0 then...
-			if (--_timeToNextDrone <= 0)
-			{
-				// Setting new time of spawning Drones
-				_timeToNextDrone = GetTimeToNextDrone;
-
-				// Defining random position around the boss (Via Helper) and write it into Var 01
-				Vector2 spawnPosition = Helper.RandomPointInArea(new Vector2(boss.npc.Center.X - DronSpawnAreaX / 2, boss.npc.Center.Y - DronSpawnAreaY / 2), new Vector2(boss.npc.Center.X + DronSpawnAreaX / 2, boss.npc.Center.Y + DronSpawnAreaY / 2));
-
-				// Spawning Drone with coordinates from Var 01 and with ID in ai[3]
-				_signalDrones.Add(NPC.NewNPC((int)spawnPosition.X, (int)spawnPosition.Y + LaserYOffset, boss.mod.NPCType("SignalDron"), 0, 0, 0, 0, boss.npc.whoAmI));
-			}
-		}
-
-		private void ShootDrones(Motherboard boss) // If it is time to shoot
-		{
-			if (_signalDrones.Count <= 0) // If there're no Drones then...
-				return; // Ending the method
-
-			// If it is time to shoot or if the boss is already shooting then...
-			if (--_timeToShoot <= 0 || _shootNow)
-			{
-				if (_lastSignalDron == -1 && boss.npc.ai[0] != -1)
-					return;
-
-				 // Setting new shoot time
-				_timeToShoot = ShootRate;
-
-				// Shooting
-				_shootNow = true;
-
-				 // If it is time to shoot Drones lasers then...
-				if (--_timeToLaser <= 0)
-				{
-					// Set new shoot time
-					_timeToLaser = TimeToLaserRate;
-
-					// If there's no last Drone shooting then...
-					if (_lastSignalDron == -1)
-					{
-						// Take new Drone from the array
-						_lastSignalDron = 0;
-
-						// Shoot the Drone from the boss
-						Main.projectile[Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y, 0, 0, boss.mod.ProjectileType("projMotherboardLaser"), LaserDamage, LaserKb, 0, boss.npc.whoAmI, _signalDrones[_lastSignalDron])].localAI[1] = 1;
-
-						return;
-					}
-
-					// Taking new Drone
-					++_lastSignalDron;
-
-					// Checking for exiting the bounds of array
-					if (_lastSignalDron < _signalDrones.Count)
-					{						// Shoot laser
-						Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y, 0, 0, boss.mod.ProjectileType("projMotherboardLaser"), LaserDamage, LaserKb, 0, _signalDrones[_lastSignalDron - 1], _signalDrones[_lastSignalDron]);
-					}
-
-					// If it is last drone then...
-					if (_lastSignalDron + 1 >= _signalDrones.Count)
-					{
-						Vector2 vel = Helper.VelocityToPoint(Main.npc[_signalDrones[_signalDrones.Count - 1]].Center, Main.player[boss.npc.target].Center, 15f);
-
-						for (int i = 0; i < SecondShootCount; i++)
-						{
-							Vector2 velocity = Helper.VelocityToPoint(Main.npc[_signalDrones[_signalDrones.Count - 1]].Center, Main.player[boss.npc.target].Center, SecondShootSpeed);
-							velocity.X = velocity.X + Main.rand.Next(-SecondShootSpread, SecondShootSpread + 1) * SecondShootSpreadMult;
-							velocity.Y = velocity.Y + Main.rand.Next(-SecondShootSpread, SecondShootSpread + 1) * SecondShootSpreadMult;
-							Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y, velocity.X, velocity.Y, LaserType, SecondShootDamage, SecondShootKn);
-						}
-
-						// Shooting the player with another laser, setting last Drone to -1 and ending the cycle of shooting
-						_lastSignalDron = -1;
-						_shootNow = false;
-					}
-				}
-			}
-		}
-
-		private void MaybeChangeStage(Motherboard boss) // Trying change stage
-		{
-			CheckDrones(boss); // Checking for Drones
-			if (_signalDrones.Count <= 0) // If there are no Drones alive
-			{
-				boss.stage = boss.stage2; // Toggling off 1st Stage
-				boss.stage.Start(boss);
-			}
-		}
-
 		public override void AI(Motherboard boss)
 		{
-			CheckDrones(boss); // Removes dead Drones from the list
-			SpawnDrones(boss); // Spawns Drones
-			ShootDrones(boss); // Shoots lasers
-			MaybeChangeStage(boss);
+			RemoveDeadDrones(boss);
+
+			if (_signalDrones.Count < MaxDrones)
+			{
+				--_timeToNextDrone;
+				if (_timeToNextDrone < 0)
+				{
+					_timeToNextDrone = 60 * Main.rand.Next(3, 6);
+					SpawnOneDrone(boss);
+				}
+			}
+
+			if (_signalDrones.Count > 0)
+			{
+				--_timeToShoot;
+				if (_timeToShoot < 0)
+				{
+					// only shoot lasers if there are any and we are in moving phase
+					if (_lastSignalDrone > -1 && boss.npc.ai[0] == -1)
+					{
+						ShootDroneLasers(boss);
+					}
+				}
+			}
+			else
+			{
+				Main.NewText("Switching to stage 2");
+				boss.stage = boss.stage2;
+				boss.stage.Start(boss);
+			}
 		}
 	}
 
@@ -266,25 +234,16 @@ namespace Tremor.NPCs
 
 	public class Stage2 : Stage
 	{
+		public Stage2(int followPlayerTime, int disappearingTime, int appearingTime) : base(followPlayerTime, disappearingTime, appearingTime) {}
+
 		private List<int> _clampers = new List<int>(); // Clampers list
 
-		public override void Animate(Motherboard boss)
-		{
-			if (--_timeToAnimation <= 0)
-			{
-				if (++_currentFrame > 3)
-					_currentFrame = 1;
-				_timeToAnimation = AnimationRate;
-				boss.npc.frame = boss.GetFrame(_currentFrame + 3);
-			}
-		}
-
+		public override int FrameOffset => 3;
+		
 		public override void AdjustHead(Motherboard boss)
 		{
 			Main.npcHeadBossTexture[boss.headTexture] = boss.mod.GetTexture("NPCs/Motherboard_Head_Boss");
 		}
-
-		public Stage2(int followPlayerTime, int disappearingTime, int appearingTime) : base(followPlayerTime, disappearingTime, appearingTime) {}
 
 		public override void Start(Motherboard boss)
 		{
@@ -306,23 +265,31 @@ namespace Tremor.NPCs
 
 		private void CheckClampers(Motherboard boss)
 		{
-			for (int index = 0; index < _clampers.Count; index++) // Passing through each element of array with ID of clampers
-				if (!Main.npc[_clampers[index]].active || Main.npc[_clampers[index]].type != boss.mod.NPCType("Clamper")) // If
-																													 // NPC with ID from array isn't a Clamper or is dead then...
-				{
-					_clampers.RemoveAt(index); // Remove ID of this NPC from Clamper list
-					--index; // Lowering index by 1 in order not to miss 1 element in array of IDs
-				}
+			List<int> aliveDronesList = _clampers.Where(x => Main.npc[x].active && Main.npc[x].type == boss.mod.NPCType("Clamper")).ToList();
+			_clampers = aliveDronesList;
+
 			foreach (int ID in _clampers)
 			{
-				int id = Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + LaserYOffset, 0, 0, boss.mod.ProjectileType("projClamperLaser"), LaserDamage, LaserKb, 0, boss.npc.whoAmI, ID);
+				int id = Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + LaserYOffset, 0, 0,
+								  boss.mod.ProjectileType("projClamperLaser"), LaserDamage, LaserKb, 0, boss.npc.whoAmI, ID);
 				Main.projectile[id].localAI[1] = stateTime;
 			}
 		}
 
-		// phase1
-		// phase2
-		// phase3
+		protected void SecondShoot(Motherboard boss)
+		{
+			if (!boss.isInsideTerrain()) {
+				--_secondShootTime;
+			}
+
+			if (_secondShootTime <= 0)
+			{
+				_secondShootTime = SecondShootRate;
+				for (int i = 0; i < 2; i++) {
+					Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + 95, 0, 0, boss.mod.ProjectileType("projMotherboardSuperLaser"), SecondShootDamage, SecondShootKn, 0, boss.npc.whoAmI, i);
+				}
+			}
+		}
 
 		public override void AI(Motherboard boss)
 		{
@@ -407,7 +374,6 @@ namespace Tremor.NPCs
 
 			CheckClampers(boss);
 			SecondShoot(boss);
-			return;
 		}
 	}
 
@@ -551,7 +517,7 @@ namespace Tremor.NPCs
 
 		public Rectangle GetFrame(int number)
 		{
-			return new Rectangle(0, npc.frame.Height * (number - 1), npc.frame.Width, npc.frame.Height);
+			return new Rectangle(0, npc.frame.Height * number, npc.frame.Width, npc.frame.Height);
 		}
 
 		public bool isInsideTerrain() {
@@ -647,7 +613,7 @@ namespace Tremor.NPCs
 		//	{
 		//		writer.Write(drone);
 		//	}
-		//	writer.Write(_lastSignalDron);
+		//	writer.Write(_lastSignalDrone);
 		//	writer.Write(_shootNow);
 		//	writer.Write(_timeToNextDrone);
 		//	writer.Write(_timeToShoot);
@@ -672,7 +638,7 @@ namespace Tremor.NPCs
 		//	{
 		//		_signalDrones[i] = reader.ReadInt32();
 		//	}
-		//	_lastSignalDron = reader.ReadInt32();
+		//	_lastSignalDrone = reader.ReadInt32();
 		//	_shootNow = reader.ReadBoolean();
 		//	_timeToNextDrone = reader.ReadInt32();
 		//	_timeToShoot = reader.ReadInt32();
