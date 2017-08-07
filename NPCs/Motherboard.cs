@@ -56,7 +56,7 @@ namespace Tremor.NPCs
 		}
 
 		public virtual int FrameOffset => 0;
-		
+
 		public void Animate(Motherboard boss)
 		{
 			--_timeToAnimation;
@@ -216,7 +216,6 @@ namespace Tremor.NPCs
 			}
 			else
 			{
-				Main.NewText("Switching to stage 2");
 				boss.stage = boss.stage2;
 				boss.stage.Start(boss);
 			}
@@ -239,7 +238,7 @@ namespace Tremor.NPCs
 		private List<int> _clampers = new List<int>(); // Clampers list
 
 		public override int FrameOffset => 3;
-		
+
 		public override void AdjustHead(Motherboard boss)
 		{
 			Main.npcHeadBossTexture[boss.headTexture] = boss.mod.GetTexture("NPCs/Motherboard_Head_Boss");
@@ -268,6 +267,7 @@ namespace Tremor.NPCs
 			List<int> aliveDronesList = _clampers.Where(x => Main.npc[x].active && Main.npc[x].type == boss.mod.NPCType("Clamper")).ToList();
 			_clampers = aliveDronesList;
 
+			// these clamper "lasers" are the strings?
 			foreach (int ID in _clampers)
 			{
 				int id = Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + LaserYOffset, 0, 0,
@@ -286,7 +286,8 @@ namespace Tremor.NPCs
 			{
 				_secondShootTime = SecondShootRate;
 				for (int i = 0; i < 2; i++) {
-					Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + 95, 0, 0, boss.mod.ProjectileType("projMotherboardSuperLaser"), SecondShootDamage, SecondShootKn, 0, boss.npc.whoAmI, i);
+					Projectile.NewProjectile(boss.npc.Center.X, boss.npc.Center.Y + 95, 0, 0,
+								 boss.mod.ProjectileType("projMotherboardSuperLaser"), SecondShootDamage, SecondShootKn, 0, boss.npc.whoAmI, i);
 				}
 			}
 		}
@@ -295,6 +296,11 @@ namespace Tremor.NPCs
 		{
 			boss.Teleport();
 			boss.npc.TargetClosest(true);
+
+			// this was never actually executed
+			// not sure what is meant to do, or where it is supposed to go
+			// for (int i = 0; i < _clampers.Count; i++)
+			//	Main.npc[_clampers[i]].ai[2] = 1;
 
 			// following
 			if (boss.npc.ai[1] == 0f)
@@ -305,55 +311,45 @@ namespace Tremor.NPCs
 					// increment the something timer
 					boss.npc.localAI[1] += 1f;
 
-					// if the timer is due
+					// if the timer is due, plus some random amount of ticks
 					if (boss.npc.localAI[1] >= 120 + Main.rand.Next(200))
 					{
 						boss.npc.localAI[1] = 0f;
 						boss.npc.TargetClosest(true);
 
 						// attempt to find coords somewhere around the target (max 100 tries)
-						bool foundCoords = false;
-						int attempts = 0;
-						int coordX = 0;
-						int coordY = 0;
-
-						while (true && attempts < 100)
+						// break as soon as we find a place around the player that we can move to
+						for (int attempts = 0; attempts < 100; attempts++)
 						{
-							attempts++;
-							coordX = (int) Main.player[boss.npc.target].Center.X / 16 + Main.rand.Next(-50, 51);
-							coordY = (int) Main.player[boss.npc.target].Center.Y / 16 + Main.rand.Next(-50, 51);
+							int coordX = (int) Main.player[boss.npc.target].Center.X / 16 + Main.rand.Next(-50, 51);
+							int coordY = (int) Main.player[boss.npc.target].Center.Y / 16 + Main.rand.Next(-50, 51);
 
-							// break as soon as we find a shootable pair of coordinates
 							if (!WorldGen.SolidTile(coordX, coordY)
 							    && Collision.CanHit(new Vector2(coordX * 16, coordY * 16), 1, 1,
 										Main.player[boss.npc.target].position,
 										Main.player[boss.npc.target].width,
 										Main.player[boss.npc.target].height))
 							{
-								foundCoords = true;
+								boss.npc.ai[1] = 1f;
+								boss.npc.ai[2] = coordX;
+								boss.npc.ai[3] = coordY;
+								boss.npc.netUpdate = true;
 								break;
 							}
 						}
 
-						// set new coords if found
-						if (foundCoords)
-						{
-							boss.npc.ai[1] = 1f;
-							boss.npc.ai[2] = coordX;
-							boss.npc.ai[3] = coordY;
-							boss.npc.netUpdate = true;
-						}
 						return;
 					}
 				}
 			}
-			// appearing
+			// disappearing
 			else if (boss.npc.ai[1] == 1f)
 			{
-				boss.npc.alpha += 3;
-				if (boss.npc.alpha >= 255)
+				boss.npc.alpha = Math.Min(boss.npc.alpha + 3, 255);
+
+				// finished disappearing
+				if (boss.npc.alpha == 255)
 				{
-					boss.npc.alpha = 255;
 					boss.npc.position.X = boss.npc.ai[2] * 16f - boss.npc.width / 2;
 					boss.npc.position.Y = boss.npc.ai[3] * 16f - boss.npc.height / 2;
 					boss.npc.ai[1] = 2f;
@@ -363,15 +359,17 @@ namespace Tremor.NPCs
 			// appearing
 			else if (boss.npc.ai[1] == 2f)
 			{
-				boss.npc.alpha -= 3;
-				if (boss.npc.alpha <= 0)
+				boss.npc.alpha = Math.Max(0, boss.npc.alpha - 3);
+
+				// finished appearing
+				if (boss.npc.alpha == 0)
 				{
-					boss.npc.alpha = 0;
 					boss.npc.ai[1] = 0f;
 					return;
 				}
 			}
 
+			// not finished appearing, disappearing, or didn't find a new place to move to....?
 			CheckClampers(boss);
 			SecondShoot(boss);
 		}
@@ -537,10 +535,6 @@ namespace Tremor.NPCs
 			if (stage.stateTime <= 0) // If state time < or = 0 then update a variable
 				stage.stateTime = stage.GetStateTime; // Updating
 
-			// this was never actually executed
-			// for (int i = 0; i < _clampers.Count; i++)
-			//	Main.npc[_clampers[i]].ai[2] = 1;
-
 			// If it is time to appear
 			if (stage.stateTime <= GetAppearingTimeNow)
 			{
@@ -559,7 +553,8 @@ namespace Tremor.NPCs
 			if (npc.ai[0] == -2)
 				stage.appearTime = GetAppearingTimeNow;
 
-			if (--(stage.appearTime) > 0)
+			--(stage.appearTime);
+			if (stage.appearTime > 0)
 			{
 				npc.ai[0] = -3;
 				return;
